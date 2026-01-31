@@ -1,4 +1,5 @@
-// This would be my second commit. This is a basic code using split operator and finite difference method to solve a non-linear schrodinger equation.
+// This would be my fourth commit. I have changed the code from using the Finite Difference(FD) Algorithm to Fast Fourier Transform(FFT) algorithm, which 
+// much faster than FD. This would help in increasing the integration time to much higher values.
 
 #include <iostream>
 #include <vector>
