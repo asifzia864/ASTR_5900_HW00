@@ -8,106 +8,134 @@
 #include <fstream>
 #include <iomanip> 
 #include <unsupported/Eigen/MatrixFunctions>
+# include <unsupported/Eigen/FFT>
+using namespace std;
 
-// Exponential of Kinetic Operator using Matrix Exponential
-Eigen::MatrixXcd Kinetic_Operator(const Eigen::MatrixXcd& K_matrix, double dt) {
-    std::complex<double> I_dt(0.0, -dt);
-    Eigen::MatrixXcd M = K_matrix * I_dt;
-    return M.exp();
+//-------------------------------------FUNCTION DECLARATIONS--------------------------------------------
+
+// Harmonic Trap declaration
+double trap_potential(double x_val);
+
+//Split operator step for spinless BEC
+void split_operator_step(Eigen::VectorXcd& Psi,
+        Eigen::VectorXd& trap_potential_array,Eigen::VectorXcd& Opr_K,
+        double dt, double c0, Eigen::FFT<double>& fft);
+
+// -------------------------------------FUNCTION DEFINITIONS--------------------------------------------
+// Harmonic trap definition
+double trap_potential(double x_val){
+    double pot = 0.5 * pow(x_val,2.0);
+    return pot; 
 }
 
-double V_trap(double x_val) {
-    return 0.5 * (std::pow(x_val, 2));
+// // Split operator step 
+void split_operator_step(Eigen::VectorXcd& Psi,
+        Eigen::VectorXd& trap_potential_array,Eigen::VectorXcd& Opr_K,
+        double dt, double c0, Eigen::FFT<double>& fft){ 
+
+    Eigen::VectorXd V_eff = trap_potential_array + c0*Psi.cwiseAbs2();
+    complex<double> I_half_dt(0.0,-dt/2.0);
+    Eigen::VectorXcd Opr_V = (I_half_dt*V_eff.cast<complex<double>>()).array().exp();
+    Psi = Opr_V.cwiseProduct(Psi);
+    //Fourier transform Psi here to Phi through some FFTW?? 
+    Eigen::VectorXcd Phi(Psi.size());
+    fft.fwd(Phi,Psi);
+    // Then probably have to define Opr_K: exp(-idt*p**2/2m)
+    Phi = Opr_K.cwiseProduct(Phi); 
+    // Inverse fourier transform to get Psi
+    fft.inv(Psi,Phi);
+    Psi = Opr_V.cwiseProduct(Psi);
 }
 
-int main() {
-    // --- Constants and Parameters ---
-    const double x_min = -10;
-    const double x_max = 10;
-    const int Nx = 256;
-    const double PI = acos(-1.0);
-    double dx = (x_max - x_min) / double(Nx);
-    const double dt = 0.001;
-    double g_int = 0.01;
-    double TOTAL_TIME = 10.0 * PI;
-    const int N_STEPS = static_cast<int>(std::round(TOTAL_TIME / dt));
+int main(){
+    // Parameters
+    int Nx = 256;
+    double x_min = -10;
+    double x_max = 10;
+    double L = x_max - x_min;
+    double dx = (x_max - x_min)/double(Nx);
+    double pi = acos(-1.0);
+    double c0 = 0.01;
+    double dt = 0.001;
+    double T = 10*pi;
+    double Nt = static_cast<int>(std::round(T/dt));
+    int center_idx = Nx / 2;
 
-    // --- Grid Initialization ---
+    // Grid Position Space
     Eigen::VectorXd x(Nx);
-    for (int j = 0; j < Nx; j++) {
-        x[j] = x_min + j * dx;
-    }
-
-    // --- Potential and Kinetic Matrix ---
-    Eigen::VectorXd V_trap_array(Nx);
-    Eigen::MatrixXcd K_matrix(Nx, Nx);
-    K_matrix.setZero();
-    double coeff = -0.5 / (dx * dx);
-
-    for (int i = 0; i < Nx; i++) {
-        V_trap_array[i] = V_trap(x[i]);
-        K_matrix(i, i) = std::complex<double>(-2.0 * coeff, 0.0);
-        if (i < Nx - 1) K_matrix(i, i + 1) = std::complex<double>(1.0 * coeff, 0.0);
-        if (i > 0)      K_matrix(i, i - 1) = std::complex<double>(1.0 * coeff, 0.0);
-    }
-
-    // Pre-calculate the full kinetic propagator matrix
-    Eigen::MatrixXcd kinetic_propagator = Kinetic_Operator(K_matrix, dt);
-
-    // --- Initial Wavefunction (Ground State) ---
-    Eigen::VectorXcd Psi(Nx);
-    double norm_sum = 0;
-    for (int i = 0; i < Nx; i++) {
-        double psi_real = std::pow(1.0 / PI, 0.25) * std::exp(-0.5 * std::pow(x[i], 2));
-        Psi[i] = std::complex<double>(psi_real, 0.0);
-        norm_sum += std::norm(Psi[i]) * dx;
-    }
-    Psi /= std::sqrt(norm_sum); // Normalize
-
-    std::ofstream file_time("Finite_difference_center_density_evolution.csv");
-    file_time << "time,center_density" << std::endl;
-
-    std::cout << "Starting Finite Difference Split-Step simulation..." << std::endl;
-
-    // Time Loop
-    for (int step = 0; step < N_STEPS; step++) {
-        double current_time = step * dt;
-
-        //central density at current time
-        double density_center = std::norm(Psi[Nx / 2]);
-        file_time << std::fixed << std::setprecision(6) << current_time << "," 
-                  << std::scientific << std::setprecision(8) << density_center << "\n";
-
-        //Split-Step Algorithm
-        // Half Potential Step
-        Eigen::VectorXd V_eff = V_trap_array + g_int * Psi.cwiseAbs2();
-        std::complex<double> I_half_dt(0.0, -dt / 2.0);
-        Eigen::VectorXcd P_V = (I_half_dt * V_eff.cast<std::complex<double>>()).array().exp();
-        
-        Psi = P_V.cwiseProduct(Psi);
-
-        // Full Kinetic Step 
-        Psi = kinetic_propagator * Psi;
-
-        // Final Half Potential Step
-        V_eff = V_trap_array + g_int * Psi.cwiseAbs2(); // Re-calculate V_eff with new Psi
-        P_V = (I_half_dt * V_eff.cast<std::complex<double>>()).array().exp();
-        Psi = P_V.cwiseProduct(Psi);
-
-        if (step % 5000 == 0) {
-            std::cout << "Time: " << current_time << " | Center Density: " << density_center << std::endl;
+    for (int i = 0; i < Nx ; i++){
+        x(i) = x_min + i*dx;}
+    
+    // Grid Momentum Space
+    Eigen::VectorXd k(Nx);
+    double dk = (2.0 * pi)/L;
+    for (int i= 0; i<Nx;i++){
+        if (i < Nx/2){
+            k[i] = i *dk; // Positive Frequencies
+        } else {
+            k[i] = (i - Nx)*dk; // Negative frequencies
         }
     }
-    file_time.close();
 
-    // --- Save Final Density Profile ---
-    std::ofstream file_final("Finite_difference_final_density_profile.csv");
-    file_final << "x,density" << std::endl;
-    for (int i = 0; i < Nx; i++) {
-        file_final << std::fixed << std::setprecision(6) << x[i] << "," 
-                   << std::scientific << std::setprecision(8) << std::norm(Psi[i]) << "\n";
+    // Potential
+    Eigen::VectorXd trap_potential_array(Nx);
+    for (int j = 0; j<Nx;j++){
+        trap_potential_array[j] = trap_potential(x[j]);
     }
-    file_final.close();
+
+    // Exponential of the Kinetic Operator in the split step method
+    complex<double> I_dt(0.0,dt);
+    Eigen::VectorXd T_array = 0.5 * k.array().square();
+    Eigen::VectorXcd Opr_K = (-1.0 * I_dt * T_array.cast<complex<double>>()).array().exp();
+
+    // Initial Wavefunction
+    Eigen::VectorXcd Psi(Nx);
+    double analytic_norm = pow(1.0/pi,0.25);
+    for (int i = 0; i < Nx; i++){
+        double val = analytic_norm * exp(-0.5*pow(x[i],2.0));
+        Psi[i] = complex<double>(val,0.0);
+    }
+    // Numerical Normalisation check
+    double norm_sq = Psi.cwiseAbs2().sum() * dx;
+    Psi /= sqrt(norm_sq);
+
+    // FFT setup
+    Eigen::FFT<double> fft;
+
+    // --- CSV File Setup ---
+    ofstream density_file("center_density_using_FFT.csv");
+    if (!density_file.is_open()) {
+        cerr << "Error opening file!" << endl;
+        return 1;
+    }
+    // CSV Header
+    density_file << "Time,Center_Density" << endl;
+    cout<<"Sarting the Split Step simulation using FFT"<<endl;
+    
+    for (int step = 0;step < Nt ; step++){
+        double current_time = step * dt;
+        // Save central density (magnitude squared)
+        double central_density = std::norm(Psi(center_idx)); 
+        density_file << fixed << setprecision(6) << current_time << "," 
+                     << scientific << setprecision(8) << central_density << "\n";
+        split_operator_step(Psi, trap_potential_array, Opr_K, dt,c0,fft);
+
+        if (step % 1000 == 0) {
+            // Norm check in real space (Parseval's theorem guarantees it in k-space too)
+            double current_norm = Psi.cwiseAbs2().sum() * dx;
+            cout << "Step: " << step << " | Norm: " << current_norm << endl;
+        }
+    }
+   density_file.close();
+    cout << "Simulation Complete. Data saved to center_density.csv" << endl;
+
+    // Save final density profile to CSV
+    ofstream final_psi("final_density_using_FFT.csv");
+    final_psi << "x,Density" << endl;
+    for (int i = 0; i < Nx; ++i) {
+        final_psi << x(i) << "," << std::norm(Psi(i)) << endl;
+    }
+    final_psi.close();
 
     return 0;
 }
